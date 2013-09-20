@@ -1,0 +1,143 @@
+#include <Timer.h>
+
+module EasyCollectionC {
+  uses interface Boot;
+  uses interface SplitControl as RadioControl;
+  uses interface StdControl as RoutingControl;
+  uses interface Send;
+  uses interface Leds;
+  uses interface Timer<TMilli>;
+  uses interface RootControl;
+  uses interface Receive;
+
+  uses interface SplitControl as SerialControl;
+  uses interface AMSend;
+  uses interface Packet as SerialPacket;
+}
+implementation {
+  message_t packet;
+  message_t sf_pkt;
+
+  bool sendBusy = FALSE;
+  bool locked = FALSE;
+  uint8_t Node_id = 0;
+  uint16_t xdata = 0;
+  uint16_t ydata = 0;
+  uint16_t zdata = 0;
+
+  typedef nx_struct EasyCollectionMsg {
+    nx_uint8_t  Node_ID;
+    nx_uint16_t data1;
+    nx_uint16_t data2;
+    nx_uint16_t data3;
+  } EasyCollectionMsg;
+
+ typedef nx_struct sf_msg {
+  nx_uint8_t 	       Node_ID;
+  nx_uint16_t          data1;
+  nx_uint16_t          data2;
+  nx_uint16_t          data3;
+} sf_msg;
+
+ 
+
+  event void Boot.booted() {
+    call RadioControl.start();
+    call SerialControl.start();
+  }
+  
+  event void RadioControl.startDone(error_t err) {
+    if (err != SUCCESS)
+      call RadioControl.start();
+    else {
+      call RoutingControl.start();
+      if (TOS_NODE_ID == 0) 
+	call RootControl.setRoot();
+      else
+	call Timer.startPeriodic(2000);
+    }
+  }
+
+  event void RadioControl.stopDone(error_t err) {}
+  
+  event void SerialControl.startDone(error_t err){}
+
+  event void SerialControl.stopDone(error_t err){}
+
+
+  void sendMessage() {
+    EasyCollectionMsg* msg =
+      (EasyCollectionMsg*)call Send.getPayload(&packet, sizeof(EasyCollectionMsg));
+    msg->Node_ID = TOS_NODE_ID;
+    msg->data1 = xdata;
+    msg->data2 = ydata;
+    msg->data3 = zdata;
+    
+    if (call Send.send(&packet, sizeof(EasyCollectionMsg)) != SUCCESS) 
+      call Leds.led0On();
+    else 
+      sendBusy = TRUE;
+  }
+
+void SerialSendTask()
+        {   
+        sf_msg* sf_payload = (sf_msg*)call SerialPacket.getPayload(&sf_pkt, sizeof(sf_msg));
+        sf_payload->Node_ID = Node_id;
+        sf_payload->data1 = xdata;
+        sf_payload->data2 = ydata;
+        sf_payload->data3 = zdata; 
+        
+  if(locked){
+      return;
+     }else{
+       if(sf_payload == NULL) {return;}
+       if(call SerialPacket.maxPayloadLength() < sizeof(sf_msg)){
+       return;
+	}
+      if(call AMSend.send(AM_BROADCAST_ADDR, &sf_pkt, sizeof(sf_msg)) == SUCCESS){
+	locked = TRUE;
+      }
+    }
+   }
+
+event void AMSend.sendDone(message_t* bufPtr, error_t error){
+    if(&sf_pkt == bufPtr){
+      locked = FALSE;
+    }
+  }
+
+  event void Timer.fired() {
+    call Leds.led2Toggle();
+    if (!sendBusy)
+      sendMessage();
+  }
+  
+  event void Send.sendDone(message_t* m, error_t err) {
+    if (err != SUCCESS) 
+      call Leds.led0On();
+    sendBusy = FALSE;
+  }
+  
+  event message_t* 
+  Receive.receive(message_t* msg, void* payload, uint8_t len) {
+    call Leds.led1Toggle();   
+    if (TOS_NODE_ID == 0) 
+	{
+        if (len == sizeof(EasyCollectionMsg)) {
+        EasyCollectionMsg* Radio_payload =(EasyCollectionMsg*) payload;
+        atomic {
+                Node_id=Radio_payload->Node_ID;
+                xdata=Radio_payload->data1;
+                ydata=Radio_payload->data2;
+                zdata=Radio_payload->data3;
+                }
+        }                    
+        SerialSendTask();
+        }  
+    return msg;    
+   }
+
+
+}
+
+
